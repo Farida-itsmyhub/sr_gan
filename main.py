@@ -50,6 +50,7 @@ class Generator(nn.Module):
             nn.Conv2d(in_channels=3, out_channels=64, kernel_size=9, stride=1, padding=4),
             nn.PReLU())
         
+        # Residual blocks
         self.layer2 = Residual_block(64)
         self.layer3 = Residual_block(64)
         self.layer4 = Residual_block(64)
