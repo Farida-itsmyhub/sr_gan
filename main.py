@@ -50,7 +50,7 @@ class Generator(nn.Module):
             nn.Conv2d(in_channels=3, out_channels=64, kernel_size=9, stride=1, padding=4),
             nn.PReLU())
         
-        # Residual blocks
+        # 16 Residual blocks
         self.layer2 = Residual_block(64)
         self.layer3 = Residual_block(64)
         self.layer4 = Residual_block(64)
@@ -197,19 +197,18 @@ class Discriminator(nn.Module):
         b = self.layer6(b)
         b = self.layer7(b)
         b = self.layer8(b)
-        b = b.view(b.size(0), -1)  #b.reshape(b.size(0), -1) 
-        #b = b.view(-1, 1).squeeze(1)
+        b = b.view(b.size(0), -1) 
         b = self.layer9(b)
         ba = b.size(0) #  b.shape[0]
-        b = torch.sigmoid(b.view(ba))  # не было '-1'
+        b = torch.sigmoid(b.view(ba)) 
 
         return b
 
 
-class Dataset(Dataset):  #Dataset
+class Dataset(Dataset):  
     def __init__(self, direct, crop, resolution):
         super(Dataset, self).__init__()
-        self.dataset = [os.path.join(direct, x) for x in os.listdir(direct)]  # проверку на формат jpg, png ... ?
+        self.dataset = [os.path.join(direct, x) for x in os.listdir(direct)]  
         self.lr_transform = self.LR_crop(crop, resolution)
         self.hr_transform = self.HR_crop(crop)
 
@@ -233,8 +232,8 @@ class Dataset(Dataset):  #Dataset
         return data_transform_lr
 
     def HR_crop(self, crop):
-        data_transform_hr = transforms.Compose([transforms.RandomCrop(crop),   # не нужно преобразовывать в PIL
-                                                transforms.Resize(crop), #, interpolation=Image.BICUBIC),
+        data_transform_hr = transforms.Compose([transforms.RandomCrop(crop),  
+                                                transforms.Resize(crop), 
                                                 transforms.ToTensor()])
         return data_transform_hr
 
@@ -243,9 +242,7 @@ class Loss_Generator(nn.Module):
     def __init__(self):
         super(Loss_Generator, self).__init__()
         vgg19 = models.vgg19(pretrained=True)
-        #self.loss_vgg19 = nn.Sequential(*list(vgg19.children()))[0]  # children : все слои по порядку
         self.mse_loss = nn.MSELoss()
-        #self.sigmoid = nn.Sigmoid()
         self.bceloss = nn.BCELoss()
 
         blocks = []
@@ -258,19 +255,16 @@ class Loss_Generator(nn.Module):
 
         blocks = nn.ModuleList(blocks)
 
-
-
         for bl in blocks.parameters():
             bl.requires_grad = False
         self.blocks = blocks
-        '''mean = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1)
+        '''mean = torch.tensor([0.485, 0.456, 0.406]).view(1,3,1,1)  для нормализации в imagenet
         std = torch.tensor([0.229, 0.224, 0.225]).view(1,3,1,1)'''
 
         self.register_buffer('mean', mean)
         self.register_buffer('std', std)
 
     def forward(self, hr_, sr_, out_discriminator):
-        #content_loss = (self.mse_loss(self.loss_vgg19(hr_img)/12.75, self.loss_vgg19(sr_img)/12.75)) 
         content_loss = 0.0
         output_x, output_y = [], []
 
@@ -287,8 +281,6 @@ class Loss_Generator(nn.Module):
             y = block(sr_img).div(12.75)'''
             content_loss += self.mse_loss(y,x)
 
-        #content_loss = content_loss.div(len(self.blocks))
-        #logit = self.sigmoid(out_discriminator)
         ones = torch.ones_like(out_discriminator)
         ones = ones - 0.1
         adversarial_loss = self.bceloss(out_discriminator, ones) #torch.ones_like(out_discriminator))
@@ -300,19 +292,16 @@ class Loss_Generator(nn.Module):
 class Loss_Discriminator(nn.Module):
     def __init__(self):
         super(Loss_Discriminator, self).__init__()
-        #self.sigmoid = nn.Sigmoid()  #nn.CrossEntropyLoss().to(device) if use_gpu else nn.CrossEntropyLoss()  #nn.LogSigmoid()
         self.loss = nn.BCELoss()
 
     def forward(self, real, fake):
-        #logits_f = self.sigmoid(fake)  # я убрала логиты (типо зажимы)
-        #logits_r = self.sigmoid(real)
         one = torch.ones_like(real)
         one = one - 0.1
         zeros = torch.zeros_like(fake)
         zeros = zeros + 0.1
 
-        real_loss = self.loss(real, one) #torch.ones_like(real))# torch.sigmoid(logits_r), torch.ones_like(real))#, torch.ones_like(real))  #self.logSigmoid(real)
-        fake_loss = self.loss(fake, zeros) #torch.zeros_like(fake))#torch.sigmoid(logits_f), torch.zeros_like(fake))
+        real_loss = self.loss(real, one) #torch.ones_like(real))
+        fake_loss = self.loss(fake, zeros) #torch.zeros_like(fake))
 
         return fake_loss + real_loss
 
