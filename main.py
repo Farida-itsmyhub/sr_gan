@@ -45,7 +45,7 @@ train_summary_writer = summary.create_file_writer(train_log_dir)
 
 class Generator(nn.Module):
     def __init__(self):
-        super(Generator, self).__init__()  # вызов init у родителя Generator = Module
+        super(Generator, self).__init__() 
         self.layer1 = nn.Sequential(
             nn.Conv2d(in_channels=3, out_channels=64, kernel_size=9, stride=1, padding=4),
             nn.PReLU())
