@@ -76,7 +76,7 @@ class Generator(nn.Module):
         self.layer19 = Repiet_block(64)
         self.layer20 = Repiet_block(64)
         self.layer21 = nn.Conv2d(in_channels=64, out_channels=3, kernel_size=9, stride=1, padding=4)
-        self.layer22 = nn.Tanh() #nn.Sigmoid() тк нужны значения [0;1]
+        self.layer22 = nn.Sigmoid()  # тк нужны значения [0;1]
 
     def forward(self, a):
         c = self.layer1(a)
@@ -102,7 +102,7 @@ class Generator(nn.Module):
         b = self.layer20(b)
         b = self.layer21(b)
         b = self.layer22(b)
-        return (b + 1) / 2
+        return b   # + 1) / 2
 
 
 class Residual_block(nn.Module):
