@@ -376,7 +376,11 @@ for epoch in range(num_epoch):
           loss_d.backward(retain_graph=True)
           optimizer_D.step()  
           los_sum += float(loss_d)
-          step_d += 1     
+          step_d += 1 
+        
+        else:
+          step_d = 0.0
+          los_sum = 0.0 
 
         sr_img = sr_img*2 - 1
 
