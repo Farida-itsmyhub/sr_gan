@@ -38,127 +38,99 @@ import pickle
 from tqdm import tqdm
 from skimage.measure import compare_ssim, compare_psnr
 
-# from livelossplot import PlotLosses
-
-# МАУНТ ДИСКА
-# from google.colab import drive
-# drive.mount('/content/drive')
-
-# drive.mount('/content/gdrive')#, force_remount = True)
-'''%cd /content/gdrive/MyDrive/data_download/
-!pwd'''
-
-# !wget http://data.csail.mit.edu/places/places365/test_256.tar
-# !tar -xvf test_256.tar -C /My Drive/data_download/ #/dataset_images/
-# !unzip -q -n "gdrive/My Drive/data_download/test_256.tar"
-# !ls
-# %cd ..
-'''!cp test_256.tar /content
-%cd ..
-%cd ..
-%cd ..
-!tar -xvf test_256.tar '''
-
 
 class Generator(nn.Module):
-    def __init__(self):
-        super(Generator, self).__init__()  # вызов init у родителя Generator = Module
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=64, kernel_size=9, stride=1, padding=4),
-            nn.PReLU())
+  DEFAULT_RELU_LEAKINESS = 0.1
 
-        self.layer2 = Residual_block(64)
-        self.layer3 = Residual_block(64)
-        self.layer4 = Residual_block(64)
-        self.layer5 = Residual_block(64)
-        self.layer6 = Residual_block(64)
-        self.layer7 = Residual_block(64)
-        self.layer8 = Residual_block(64)
-        self.layer9 = Residual_block(64)
-        self.layer10 = Residual_block(64)
-        self.layer11 = Residual_block(64)
-        self.layer12 = Residual_block(64)
-        self.layer13 = Residual_block(64)
-        self.layer14 = Residual_block(64)
-        self.layer15 = Residual_block(64)
-        self.layer16 = Residual_block(64)
-        self.layer17 = Residual_block(64)
+  def __init__(self, num_inputs, num_outputs, upscale_factor, \
+               num_filters=64, num_res_blocks=16, \
+               output_activation='tanh', act_fn='prelu', \
+               relu_leakiness=DEFAULT_RELU_LEAKINESS, \
+               use_norm_layers='not-first', norm_layer='batch'):
+    
+    super(Generator, self).__init__()
+    upscale_factor = int(upscale_factor)
+    assert (upscale_factor % 4 == 0)
+    in_channels = num_inputs
 
-        self.layer18 = nn.Sequential(
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64, affine=True)
-        )
-        self.layer19 = Repiet_block(64)
-        self.layer20 = Repiet_block(64)
-        self.layer21 = nn.Conv2d(in_channels=64, out_channels=3, kernel_size=9, stride=1, padding=4)
-        self.layer22 = nn.Tanh()  # Sigmoid()   # новый слой (нет в статье) - тк нужны значения [0;1]
+    initial_conv = [nn.ZeroPad2d(4),
+                    nn.Conv2d(in_channels, num_filters, kernel_size=9,
+                              stride=1), 
+                    nn.PReLU(num_parameters=64, init=0.1)]
+    in_channels = num_filters
 
-        # mean = torch.Tensor([0.485, 0.456, 0.406]).view(1,3,1,1) ПОКА ЗАКОМЕНИТИЛА - НЕПОНЯТНО ПОРИСХОЖДЕНИЕ
-        # std = torch.Tensor([0.229, 0.224, 0.225]).view(1,3,1,1)
-        # self.register_buffer('mean', mean)
-        # self.register_buffer('std', std)
+    if use_norm_layers != 'not-first' and use_norm_layers:
+      initial_conv.append(nn.BatchNorm2d(64))
+    elif use_norm_layers == 'not-first':
+      use_norm_layers = True
 
-    def forward(self, a):
-        # a = (a - self.mean) / self.std
-        c = self.layer1(a)
-        b = self.layer2(c)
-        b = self.layer3(b)
-        b = self.layer4(b)
-        b = self.layer5(b)
-        b = self.layer6(b)
-        b = self.layer7(b)
-        b = self.layer8(b)
-        b = self.layer9(b)
-        b = self.layer10(b)
-        b = self.layer11(b)
-        b = self.layer12(b)
-        b = self.layer13(b)
-        b = self.layer14(b)
-        b = self.layer15(b)
-        b = self.layer16(b)
-        b = self.layer17(b)
-        b = self.layer18(b)
+    res_blocks = []
+    for idx in range(num_res_blocks):
+      res_blocks += [ResBlock(in_channels, num_filters, kernel_size=3,
+                              use_norm_layers=use_norm_layers,
+                              norm_layer=norm_layer, act_fn=act_fn,
+                              relu_leakiness=relu_leakiness)]
 
-        b = self.layer19(b + c)
-        b = self.layer20(b)
-        b = self.layer21(b)
-        b = self.layer22(b)  # ПОКА ЧТО УБРАЛА
+    second_conv = [nn.ZeroPad2d(1),
+                   nn.Conv2d(in_channels, num_filters, kernel_size=3,
+                             stride=1)]
+    in_channels = num_filters
+    if use_norm_layers:
+      second_conv.append(nn.BatchNorm2d(in_channels))
 
-        return b
+    upsample = []
+    if upscale_factor > 1:
+      scale = 2 if upscale_factor % 2 == 0 else 3
+      for idx in range(upscale_factor // scale):
+        upsample += [ nn.ZeroPad2d(1),
+                     nn.Conv2d(in_channels, scale * scale * 256,
+                               kernel_size=3, stride=1),
+                     nn.PixelShuffle(upscale_factor=scale),
+                     nn.PReLU(num_parameters=256, init=0.1)]
+        in_channels = 256
 
+    final_conv = [nn.ZeroPad2d(4),
+                  nn.Conv2d(in_channels, num_outputs, kernel_size=9,
+                            stride=1)]
+    if output_activation != 'none':
+      final_conv.append(nn.Tanh())
 
-class Residual_block(nn.Module):
-    def __init__(self, numb):
-        super(Residual_block, self).__init__()
-        self.layer1 = nn.Conv2d(in_channels=numb, out_channels=numb, kernel_size=3, stride=1, padding=1)
-        self.layer2 = nn.BatchNorm2d(numb, affine=True)
-        self.layer3 = nn.PReLU()
-        self.layer4 = nn.Conv2d(in_channels=numb, out_channels=numb, kernel_size=3, stride=1, padding=1)
-        self.layer5 = nn.BatchNorm2d(numb, affine=True)
+    self.initial_conv = nn.Sequential(*initial_conv)
+    self.body = nn.Sequential(*(res_blocks + second_conv))
+    self.upsample = nn.Sequential(*upsample)
+    self.final_conv = nn.Sequential(*final_conv)
+    self.output_activation = output_activation
 
-    def forward(self, a):
-        b = self.layer1(a)
-        b = self.layer2(b)
-        b = self.layer3(b)
-        b = self.layer4(b)
-        b = self.layer5(b)
-
-        return a + b
+  def forward(self, x):
+    initial = self.initial_conv(x)
+    x = self.body(initial)
+    x = self.upsample(x + initial)
+    x = self.final_conv(x)
+    return x
 
 
-class Repiet_block(nn.Module):
-    def __init__(self, numb):
-        super(Repiet_block, self).__init__()
-        self.layer1 = nn.Conv2d(in_channels=numb, out_channels=256, kernel_size=3, stride=1, padding=1)
-        self.layer2 = nn.PixelShuffle(upscale_factor=2)
-        self.layer3 = nn.PReLU()  # init=0.2
+class ResBlock(nn.Module):
+  def __init__(self, in_channels, num_filters, kernel_size, use_norm_layers,
+               norm_layer, act_fn, relu_leakiness, padding='zero'):
+    
+    super(ResBlock, self).__init__()
+    modules = [nn.ZeroPad2d(1),
+               nn.Conv2d(in_channels, num_filters, kernel_size=kernel_size,
+                         stride=1)]
+    if use_norm_layers:
+      modules.append(nn.BatchNorm2d(64))
 
-    def forward(self, a):
-        b = self.layer1(a)
-        b = self.layer2(b)
-        b = self.layer3(b)
+    modules += [nn.PReLU(num_parameters=64, init=0.1),
+                nn.ZeroPad2d(1),
+                nn.Conv2d(num_filters, num_filters, kernel_size=kernel_size,
+                          stride=1)]
+    if use_norm_layers:
+      modules.append(nn.BatchNorm2d(64))
 
-        return b
+    self.block = nn.Sequential(*modules)
+
+  def forward(self, x):
+    return self.block(x) + x
 
 
 class Discriminator(nn.Module):
@@ -170,37 +142,37 @@ class Discriminator(nn.Module):
         )
         self.layer2 = nn.Sequential(
             nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(64, affine=True),
+            nn.BatchNorm2d(64),
             nn.LeakyReLU(negative_slope=0.2, inplace=True)
         )
         self.layer3 = nn.Sequential(
             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128, affine=True),
+            nn.BatchNorm2d(128),
             nn.LeakyReLU(negative_slope=0.2, inplace=True)
         )
         self.layer4 = nn.Sequential(
             nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(128, affine=True),
+            nn.BatchNorm2d(128),
             nn.LeakyReLU(negative_slope=0.2, inplace=True)
         )
         self.layer5 = nn.Sequential(
             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256, affine=True),
+            nn.BatchNorm2d(256),
             nn.LeakyReLU(negative_slope=0.2, inplace=True)
         )
         self.layer6 = nn.Sequential(
             nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(256, affine=True),
+            nn.BatchNorm2d(256),
             nn.LeakyReLU(negative_slope=0.2, inplace=True)
         )
         self.layer7 = nn.Sequential(
             nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(512, affine=True),
+            nn.BatchNorm2d(512),
             nn.LeakyReLU(negative_slope=0.2, inplace=True)
         )
         self.layer8 = nn.Sequential(
             nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(512, affine=True),
+            nn.BatchNorm2d(512),
             nn.LeakyReLU(negative_slope=0.2, inplace=True)
         )
         self.layer9 = nn.Sequential(
@@ -219,43 +191,25 @@ class Discriminator(nn.Module):
         b = self.layer6(b)
         b = self.layer7(b)
         b = self.layer8(b)
-        b = b.view(b.shape[0], -1)  # b.reshape(b.size(0), -1)
-        # b = b.view(-1, 1).squeeze(1)
+        b = b.view(b.shape[0], -1) 
         b = self.layer9(b)
-
-        # ba = b.size(0) #  b.shape[0]
-        b = torch.sigmoid(b)  # .view(ba))  # не было '-1'
+        b = torch.sigmoid(b)  
 
         return b
 
 
-class Dataset(Dataset):  # Dataset
+class Dataset(Dataset): 
     def __init__(self, direct, crop, resolution):
         super(Dataset, self).__init__()
-        self.dataset = [os.path.join(direct, x) for x in os.listdir(direct)]  # проверку на формат jpg, png ... ?
+        self.dataset = [os.path.join(direct, x) for x in os.listdir(direct)]  
         self.lr_transform = self.LR_crop(crop, resolution)
         self.hr_transform = self.HR_crop(crop)
 
     def __getitem__(self, index):
         path = self.dataset[index]
-        hr_img = self.hr_transform(Image.open(path).convert('RGB'))  # "L"))
-        lr_img = self.lr_transform(hr_img)  # Image.open(path).convert("RGB"))  # [0; 1]
-
-        # для просмотра в plot
-        '''image = lr_img.cpu().detach().numpy()
-        image1 = image.transpose(1, 2, 0)
-        plt.imshow(image1)
-        plt.show()
-        image = hr_img.cpu().detach().numpy()
-        image2 = image.transpose(1, 2, 0)
-        plt.imshow(image2)
-        plt.show()'''
-
-        hr_img = hr_img * 2 - 1  # [-1; 1]
-
-        # image = ((hr_img+1)/2).cpu().detach().numpy()
-        # image = image.transpose(1, 2, 0)
-        # plt.imsave(arr=image, fname='{}{}'.format('gdrive/My Drive/data_out/', 'yuyuy.jpg'))
+        hr_img = self.hr_transform(Image.open(path).convert('RGB')) 
+        lr_img = self.lr_transform(hr_img)  
+        hr_img = hr_img * 2 - 1  
 
         return lr_img, hr_img
 
@@ -271,8 +225,56 @@ class Dataset(Dataset):  # Dataset
         return data_transform_lr
 
     def HR_crop(self, crop):
-        data_transform_hr = transforms.Compose([transforms.RandomCrop(crop),  # не нужно преобразовывать в PIL
-                                                # transforms.Resize(crop), #, interpolation=Image.BICUBIC),
+        data_transform_hr = transforms.Compose([transforms.RandomCrop(crop), 
+                                                transforms.ToTensor()])
+        return data_transform_hr
+    
+class Dataset_Test(Dataset):
+    def __init__(self, direct, crop):
+        super(Dataset_Test, self).__init__()
+        
+        self.image_filenames = [os.path.join(direct, x) for x in os.listdir(direct)]
+        self.upscale_factor = crop
+
+    def __getitem__(self, index):
+        img_name = self.image_filenames[index]
+        img = Image.open(img_name).convert('RGB')
+        hr_image = transforms.ToTensor()(img)
+        if hr_image.size(1) % self.upscale_factor != 0 and hr_image.size(2) % self.upscale_factor != 0:
+            height_diff = hr_image.size(1) % self.upscale_factor
+            width_diff = hr_image.size(2) % self.upscale_factor
+            hr_image = self.HR_crop(hr_image.size(1) - height_diff, hr_image.size(2) - width_diff)(hr_image)
+
+        elif hr_image.size(1) % self.upscale_factor != 0 and hr_image.size(2) % self.upscale_factor == 0:
+            height_diff = hr_image.size(1) % self.upscale_factor
+            hr_image = self.HR_crop(hr_image.size(1) - height_diff, hr_image.size(2))(hr_image)
+
+        elif hr_image.size(1) % self.upscale_factor == 0 and hr_image.size(2) % self.upscale_factor != 0:
+            width_diff = hr_image.size(2) % self.upscale_factor
+            hr_image = self.HR_crop(hr_image.size(1), hr_image.size(2) - width_diff)(hr_image)
+
+        lr_transform = self.LR_crop(
+            h=hr_image.size(1),
+            w=hr_image.size(2),
+            interpolation_scale=self.upscale_factor
+        )
+        lr_image = lr_transform(hr_image)
+        hr_image = (hr_image * 2) - 1
+        return lr_image, hr_image
+
+    def __len__(self):
+        return len(self.image_filenames)
+
+    def LR_crop(self, h, w, interpolation_scale):
+        data_transform_lr = transforms.Compose([transforms.ToPILImage(),
+                                                transforms.Resize((h//interpolation_scale, w//interpolation_scale), \
+                                                                  interpolation=Image.BICUBIC),
+                                                transforms.ToTensor()]) 
+        return data_transform_lr
+
+    def HR_crop(self, h, w):
+        data_transform_hr = transforms.Compose([transforms.ToPILImage(),
+                                                transforms.Resize((h, w), interpolation=Image.BICUBIC),
                                                 transforms.ToTensor()])
         return data_transform_hr
 
@@ -281,13 +283,10 @@ class Loss_Generator(nn.Module):
     def __init__(self):
         super(Loss_Generator, self).__init__()
         vgg19 = models.vgg19(pretrained=True)
-        # self.loss_vgg19 = nn.Sequential(*list(vgg19.children()))[0]  # children : все слои по порядку
         self.mse_loss = nn.MSELoss()
-        # self.sigmoid = nn.Sigmoid()
         self.bceloss = nn.BCELoss()
 
         blocks = []
-        # blocks.append(vgg19.features[:36].eval())
         blocks.append(vgg19.features[:4].eval())
         blocks.append(vgg19.features[4:9].eval())
         blocks.append(vgg19.features[9:18].eval())
@@ -299,42 +298,26 @@ class Loss_Generator(nn.Module):
         for bl in blocks.parameters():
             bl.requires_grad = False
         self.blocks = blocks
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1,
-                                                        1)  # torch.Tensor([-0.03, -0.088, -0.188]).view(1,3,1,1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)  # torch.Tensor([0.458, 0.448, 0.45]).view(1,3,1,1)
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1) 
+        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)  
 
         self.register_buffer('mean', mean)
         self.register_buffer('std', std)
 
     def forward(self, hr_, sr_, out_discriminator):
-        # content_loss = (self.mse_loss(self.loss_vgg19(hr_img)/12.75, self.loss_vgg19(sr_img)/12.75))
         content_loss = 0.0
         output_x, output_y = [], []
-
-        # x = (hr_ + 1) / 2  #ЗАКОМЕНТИЛА
-        # y = (sr_ + 1) / 2  # попробовать ниче не делать
-        # source_range=(-1., 1.)
-        # x = x.clamp(source_range[0], source_range[1]) #(sr_ + 1)/2  hr_
-        # y = y.clamp(source_range[0], source_range[1]) #(sr_ + 1)/2
         x = torch.clone(hr_)
         y = torch.clone(sr_)
         x = x.sub(self.mean).div(self.std)
         y = y.sub(self.mean).div(self.std)
-        # x = (hr_img- self.mean) / self.std  # ПОКА ЗАКОМЕНТИЛА
-        # y = (sr_img - self.mean) / self.std
         for block in self.blocks:
             x = block(x).div(12.75)
             y = block(y).div(12.75)
-            '''x = block(hr_img).div(12.75)    проверить обновляются ли веса после обновления!! 
-            y = block(sr_img).div(12.75)'''
-            content_loss += self.mse_loss(x, y)  # попробовать по другому (штрафы) !!
-
-        # content_loss = content_loss.div(len(self.blocks))
-        # logit = self.sigmoid(out_discriminator)
+            content_loss += self.mse_loss(x, y) 
         ones = torch.ones_like(out_discriminator)
         ones = ones
-        adversarial_loss = self.bceloss(out_discriminator,
-                                        ones)  # torch.ones_like(out_discriminator)) ДОБАВИТЬ ИЛИ УБРАТЬ: torch.sigmoid
+        adversarial_loss = self.bceloss(out_discriminator, ones)  
         beta = 0.001
 
         return content_loss + beta * adversarial_loss, adversarial_loss, content_loss
@@ -343,88 +326,60 @@ class Loss_Generator(nn.Module):
 class Loss_Discriminator(nn.Module):
     def __init__(self):
         super(Loss_Discriminator, self).__init__()
-        # self.sigmoid = nn.Sigmoid()  #nn.CrossEntropyLoss().to(device) if use_gpu else nn.CrossEntropyLoss()  #nn.LogSigmoid()
         self.loss = nn.BCELoss()
 
     def forward(self, real, fake):
-        # logits_f = self.sigmoid(fake)  # я убрала логиты (типо зажимы)
-        # logits_r = self.sigmoid(real)
         one = torch.ones_like(real)
         one = one
         zeros = torch.zeros_like(fake)
-        # zeros = zeros + 0.1
 
-        real_loss = self.loss(real,
-                              one)  # torch.ones_like(real))# torch.sigmoid(logits_r), torch.ones_like(real))#, torch.ones_like(real))  #self.logSigmoid(real)
-        fake_loss = self.loss(fake, zeros)  # torch.zeros_like(fake))#torch.sigmoid(logits_f), torch.zeros_like(fake))
+        real_loss = self.loss(real, one)  
+        fake_loss = self.loss(fake, zeros)  
 
         return fake_loss + real_loss
 
 
-def log_gradients(gradmap, step):
-    for k, v in gradmap.items():
-        experiment.log_histogram_3d(to_numpy(v), name=k, step=step)
-
-
-def log_weights(model, step):
-    for name, layer in zip(model._modules, model.children()):
-        if "activ" in name:
-            continue
-
-        if not hasattr(layer, "weight"):
-            continue
-
-        wname = "%s.%s" % (name, "weight")
-        bname = "%s.%s" % (name, "bias")
-
-        experiment.log_histogram_3d(to_numpy(layer.weight), name=wname, step=step)
-        experiment.log_histogram_3d(to_numpy(layer.bias), name=bname, step=step)
-
-
-use_gpu = torch.cuda.is_available()  # использование gpu
+use_gpu = torch.cuda.is_available() 
 device = torch.device('cuda:0' if use_gpu else 'cpu')
 print('use_gpu: ', use_gpu)
 
 batch_size = 16
-learning_rateD = 0.0001  # 0.000001
-learning_rateG = 0.0004  # 0.00001
-# learning_rateD = 0.0001 #0.000001  НА 0.001 !!
-# learning_rateG = 0.001 #0.00001
+learning_rateD = 0.0001 
+learning_rateG = 0.0004  
 num_epoch = 20000
 
-root_t = '/content/drive/MyDrive/T'  # data_download/dataset_images/test_256' #data_download/dataset_images/test_256'  # div2k'  #'/content/drive/My Drive/data'  #'/content/test_256'  #'gdrive/My Drive/data' #'./data/'  #C:/Users/MM/PycharmProjects/SRgan - в начало
-# root_v = '/content/drive/MyDrive/data_download/test_256_val'
+root_t = '/content/drive/MyDrive/T'  
 crop_size = 96
 scale = 4
 
 ep = []
 
-# print(os.listdir(root))
-# print(torch.__version__, sys.version)
-
 train_dataset = Dataset(root_t, crop_size, scale)
-print(len(train_dataset))
 train = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-# val_dataset = Dataset(root_v, crop_size, scale)
-# val = DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False)
+val_dataset = Dataset_Test(root_v, scale)
+val = DataLoader(dataset=val_dataset, batch_size=batch_size, shuffle=False)
 
-dataloader = {'train': train}  # , 'val':val}
+print('LENGHT TRAIN DATASET: ', len(train_dataset))
+print('LENGHT VAL DATASET: ', len(val_dataset))
+
+dataloader = {'train': train, 'val':val} 
 
 net_G = Generator()
 net_D = Discriminator()
 
-if use_gpu:  # использоване gpu
+if use_gpu: 
     net_G.to(device)
     net_D.to(device)
 
-state_dict = torch.load('/content/drive/MyDrive/data_download/dataset_images/model_apa.pth')
+state_dict = torch.load('/content/drive/MyDrive/data_download/dataset_images/model_best.pth')
 net_D.load_state_dict(state_dict['D'])
-net_G.load_state_dict(state_dict['G'])  # , map_location=torch.device('cpu'))
+net_G.load_state_dict(state_dict['G'])
+
 cur_e = state_dict['epoch']
 
 criterion_G = Loss_Generator().to(device) if use_gpu else Loss_Generator()
 criterion_D = Loss_Discriminator().to(device) if use_gpu else Loss_Discriminator()
-optimizer_G = optim.Adam(net_G.parameters(), lr=learning_rateG, betas=(0.9, 0.999))  # как работает ?
+optimizer_G = optim.Adam(net_G.parameters(), lr=learning_rateG, betas=(0.9, 0.999))  
 optimizer_D = optim.Adam(net_D.parameters(), lr=learning_rateD, betas=(0.9, 0.999))
 
 scheduler_G = optim.lr_scheduler.ReduceLROnPlateau(optimizer_G, factor=0.1, patience=1000, verbose=True)
@@ -433,25 +388,15 @@ scheduler_D = optim.lr_scheduler.ReduceLROnPlateau(optimizer_D, factor=0.1, pati
 optimizer_G.load_state_dict(state_dict['optimizerG_state_dict'])
 optimizer_D.load_state_dict(state_dict['optimizerD_state_dict'])
 
-for param_group in optimizer_D.param_groups:
-    param_group['lr'] = 0.000001
-for param_group in optimizer_G.param_groups:
-    param_group['lr'] = 0.000004
 
-# out_loss = open("/content/drive/MyDrive/data_download/history_loss_color.txt", "a")
-
-# ТОЛЬКО ЭТО НАДО РАСКОММЕНТИТЬ (НИЖНЕЕ НЕ НАДО)
 % cd / content / drive / MyDrive
 % load_ext
 tensorboard
 current_time = str(datetime.datetime.now().timestamp())
-train_log_dir = 'logs/tensorboard/train/color'  # test256' #+ current_time  #1612986651.892884'  black_white
-# test_log_dir = 'storage/test/' + current_time
+train_log_dir = 'logs/tensorboard/train/color'
 train_summary_writer = summary.create_file_writer(train_log_dir)
-# test_summary_writer = summary.create_file_writer(test_log_dir)
 
-% tensorboard - -logdir
-logs / tensorboard
+% tensorboard - -logdir logs / tensorboard
 
 picture_t, picture_v = 0, 0
 k_t, k_v = 0, 0
@@ -461,21 +406,11 @@ loss_g = 0.0
 step_d = 0
 best_psnr = -100
 
-# !pip install livelossplot --quiet
-# logs = {}
-# liveloss = PlotLosses()
 
-! pip
-install - -upgrade
-comet_ml
-from comet_ml import Experiment
-
-experiment = Experiment(api_key="<YOUR_API_KEY>", project_name="histograms")
 
 for epoch in tqdm(range(cur_e, num_epoch)):
-    gradmap = {}
     l_G, l_D = 0, 0
-    for phase in ['train']:  # , 'val']:
+    for phase in ['train', 'val']:
         if phase == 'train':
             net_G.train()
             net_D.train()
@@ -483,7 +418,7 @@ for epoch in tqdm(range(cur_e, num_epoch)):
             net_G.eval()
             net_D.eval()
 
-        z = 0  # epoch_psnr
+        z = 0 
 
         for i, (lr_img, hr_img) in enumerate(dataloader[phase]):
 
@@ -514,19 +449,15 @@ for epoch in tqdm(range(cur_e, num_epoch)):
                 # TRAIN GENERATOR
                 if phase == 'train':
                     net_G.zero_grad()
-                fake_out = net_D(sr_img)  # МОЖЕТ УБРАТЬ, А ???
+                fake_out = net_D(sr_img) 
                 loss_g, adversarial_loss, content_loss = criterion_G(hr_img, sr_img, fake_out)
 
                 if phase == 'train':
-                    loss_g.backward()  # retain_graph=True)
+                    loss_g.backward() 
                     optimizer_G.step()
 
+                # counting metrics and output to tensorboard
                 if phase == 'train':
-                    # ep.append(k)
-                    # out_loss.write('{0} {1}\n'.format(loss_d.item(), loss_g.item()))
-                    # min_v = torch.min(sr_img[0])
-                    # range_v = torch.max(sr_img[0]) - min_v
-                    # SR = (sr_img[0] - min_v) / range_v
                     SR = (sr_img[0] + 1) / 2
                     SR = SR.cpu().detach().numpy()
                     SR = SR.transpose(1, 2, 0)
@@ -536,7 +467,7 @@ for epoch in tqdm(range(cur_e, num_epoch)):
                     PSNR = compare_psnr(HR, SR, data_range=255)
                     PIXEL_MAX = 255
                     (score, diff) = compare_ssim(SR, HR, full=True, multichannel=True)
-                    # TENSORBOARD
+                    
                     with train_summary_writer.as_default():
                         summary.scalar('train_loss_d', loss_d.item(), step=k_t)
                         summary.scalar('train_loss_g', loss_g.item(), step=k_t)
@@ -558,12 +489,10 @@ for epoch in tqdm(range(cur_e, num_epoch)):
                     print("GRADIENT NORM METHOD_G: {0}".format(torch.norm(net_G.layer21.weight.grad)))
                     print("GRADIENT NORM METHOD_D: {0}".format(torch.norm(net_D.layer9[2].weight.grad)))
 
-                gradmap = update_gradient_map(net_D, gradmap)
-
                 l_G = l_G + loss_g.item()
                 l_D = l_D + loss_d.item()
 
-                if (i + 1) % 400 == 0 and phase == 'train':
+                if (i + 1) % 1000 == 0 and phase == 'train':
                     state = {
                         'epoch': epoch,
                         'step': k_t,
@@ -571,9 +500,29 @@ for epoch in tqdm(range(cur_e, num_epoch)):
                         'G': net_G.state_dict(),
                         'optimizerD_state_dict': optimizer_D.state_dict(),
                         'optimizerG_state_dict': optimizer_G.state_dict()}
-                    torch.save(state, '/content/drive/MyDrive/data_download/dataset_images/model_7.pth')
+                    torch.save(state, '/content/drive/MyDrive/data_download/dataset_images/model.pth')
 
-                if (i + 1) % 700 == 0 and phase == 'train':
+                    for j in range(4):
+                        save_path = '/content/drive/MyDrive/data_out_train/'
+                        save_name = 'img-{}.png'.format(picture_t)
+                        save_hr = 'img-{}.png'.format(picture_t + 1)
+                        picture_t += 2
+                        save_image(sr_img[j], f'{save_path}{save_name}', nrow=0, padding=0,
+                                   normalize=True)
+                        save_image(hr_img[j], f'{save_path}{save_hr}', nrow=0, padding=0, normalize=True, range=(-1, 1))
+                
+                if phase == 'val':
+                    for j in range(6):
+                        save_path = '/content/drive/MyDrive/data_out_val/'
+                        save_sr = 'img-{}.png'.format(picture_v)
+                        save_hr = 'img-{}.png'.format(picture_v + 1)
+                        save_lr = 'img-{}.png'.format(picture_v + 2)
+                        picture_v += 3
+                        save_image(sr_img[j], f'{save_path}{save_sr}', nrow=0, padding=0, normalize=True) 
+                        save_image(hr_img[j], f'{save_path}{save_hr}', nrow=0, padding=0, normalize=True)
+                        save_image(lr_img[j], f'{save_path}{save_lr}', nrow=0, padding=0, normalize=True)
+
+                if best_psnr < PSNR and phase == 'train':
                     state = {
                         'epoch': epoch,
                         'step': k_t,
@@ -582,24 +531,9 @@ for epoch in tqdm(range(cur_e, num_epoch)):
                         'optimizerD_state_dict': optimizer_D.state_dict(),
                         'optimizerG_state_dict': optimizer_G.state_dict()
                     }
-                    torch.save(state, '/content/drive/MyDrive/data_download/dataset_images/model_6.pth')
-
-                    for j in range(4):
-                        save_path = '/content/drive/MyDrive/data_out_train/'
-                        save_name = 'img-{}.png'.format(picture_t)
-                        save_hr = 'img-{}.png'.format(picture_t + 1)
-                        picture_t += 2
-                        save_image(sr_img[j], f'{save_path}{save_name}', nrow=0, padding=0,
-                                   normalize=True)  # , range=(-1, 1))
-                        save_image(hr_img[j], f'{save_path}{save_hr}', nrow=0, padding=0, normalize=True, range=(-1, 1))
+                    torch.save(state, '/content/drive/MyDrive/data_download/dataset_images/model_best.pth')
+                
                 if phase == 'train':
                     scheduler_G.step(l_G / (i + 1))
                     scheduler_D.step(l_D / (i + 1))
-                    # epoch_psnr += PSNR
-
-        # scale gradients
-        for k, v in gradmap.items():
-            gradmap[k] = v  # / steps_per_epoch
-
-        log_gradients(gradmap, epoch)
-        log_weights(net_D, epoch)  # * steps_per_epoch)
+         
